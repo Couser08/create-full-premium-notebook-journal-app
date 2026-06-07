@@ -11,6 +11,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAppContext } from "../hooks/useAppContext";
 import { isSupabaseConfigured } from "../lib/supabase";
 import { useToast } from "./Toast";
+import SyncStatus from "./SyncStatus";
 import { cn } from "../lib/utils";
 import { Button, Separator } from "./ui";
 import CreateNotebookModal from "./CreateNotebookModal";
@@ -220,13 +221,16 @@ export default function AppShell({ children }) {
   return (
     <div className="min-h-screen bg-[#f9f9ff] text-foreground">
       {user && !focusMode && (
-        <button
-          className="fixed left-4 top-3 z-40 grid size-8 place-items-center rounded-lg border border-gray-200 bg-white shadow-sm lg:hidden"
-          onClick={() => setOpen(true)}
-          aria-label="Open navigation"
-        >
-          <Menu className="size-4" />
-        </button>
+        <div className="fixed top-0 right-0 z-30 p-4 flex items-center gap-4">
+          <SyncStatus />
+          <button
+            className="lg:hidden grid size-8 place-items-center rounded-lg border border-gray-200 bg-white shadow-sm"
+            onClick={() => setOpen(true)}
+            aria-label="Open navigation"
+          >
+            <Menu className="size-4" />
+          </button>
+        </div>
       )}
 
       {/* Desktop sidebar */}

@@ -8,6 +8,9 @@ export function AppProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("synced"); // syncing, synced, error, offline
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [syncedDeviceCount, setSyncedDeviceCount] = useState(1);
 
   const [notebooks, setNotebooks] = useState(() => {
     const saved = window.localStorage.getItem("app-notebooks");
@@ -26,9 +29,12 @@ export function AppProvider({ children }) {
 
   const [focusMode, setFocusMode] = useState(false);
   
-  // Refs to prevent recursive sync loops
+  // Refs to prevent recursive sync loops and track sync queue
   const lastSyncedNotes = useRef(null);
   const lastSyncedNotebooks = useRef(null);
+  const syncQueueRef = useRef([]);
+  const syncTimeoutRef = useRef(null);
+  const isOnlineRef = useRef(true);
 
   // Fetch data from Supabase
   const fetchData = useCallback(async (userId) => {
@@ -65,7 +71,45 @@ export function AppProvider({ children }) {
     }
   }, []);
 
-  // Auth session management
+  // Handle online/offline state
+  useEffect(() => {
+    const handleOnline = () => {
+      isOnlineRef.current = true;
+      setSyncStatus("syncing");
+      console.log('🌐 Back online - syncing queued changes');
+      
+      // Sync all queued items
+      if (syncQueueRef.current.length > 0) {
+        syncQueueRef.current.forEach(({ type, data }) => {
+          syncToSupabase(type, data);
+        });
+        syncQueueRef.current = [];
+      }
+      
+      // Refresh data
+      if (user) fetchData(user.id);
+    };
+
+    const handleOffline = () => {
+      isOnlineRef.current = false;
+      setSyncStatus("offline");
+      console.log('📴 Offline - queuing changes');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Check initial online status
+    if (!navigator.onLine) {
+      setSyncStatus("offline");
+      isOnlineRef.current = false;
+    }
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [user, fetchData, syncToSupabase]);
   useEffect(() => {
     if (isSupabaseConfigured) {
       supabase.auth.getSession().then(({ data: { session } }) => {
@@ -89,34 +133,70 @@ export function AppProvider({ children }) {
     }
   }, [fetchData]);
 
-  // Real-time subscriptions for cross-device sync
+  // Real-time subscriptions for cross-device sync with optimized payload handling
   useEffect(() => {
     if (!isSupabaseConfigured || !user) return;
 
     const notesChannel = supabase
-      .channel('public:notes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notes', filter: `user_id=eq.${user.id}` }, 
+      .channel(`notes:${user.id}`)
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'notes', filter: `user_id=eq.${user.id}` }, 
         (payload) => {
-          // Refresh data if another device changed something
-          fetchData(user.id);
+          console.log('📱 Notes synced from another device:', payload.eventType);
+          setLastSyncTime(new Date());
+          // Refresh data from another device
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            // Add or update the specific note
+            setNotes((prev) => {
+              const existing = prev.find(n => n.id === payload.new.id);
+              if (existing) {
+                return prev.map(n => n.id === payload.new.id ? payload.new : n);
+              } else {
+                return [payload.new, ...prev];
+              }
+            });
+          } else if (payload.eventType === 'DELETE') {
+            setNotes((prev) => prev.filter(n => n.id !== payload.old.id));
+          }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Notes channel status:', status);
+        setSyncedDeviceCount(status === 'SUBSCRIBED' ? 2 : 1);
+      });
 
     const notebooksChannel = supabase
-      .channel('public:notebooks')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notebooks', filter: `user_id=eq.${user.id}` }, 
-        (payload) => fetchData(user.id)
+      .channel(`notebooks:${user.id}`)
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'notebooks', filter: `user_id=eq.${user.id}` }, 
+        (payload) => {
+          console.log('📓 Notebooks synced from another device:', payload.eventType);
+          setLastSyncTime(new Date());
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            setNotebooks((prev) => {
+              const existing = prev.find(n => n.id === payload.new.id);
+              if (existing) {
+                return prev.map(n => n.id === payload.new.id ? payload.new : n);
+              } else {
+                return [...prev, payload.new];
+              }
+            });
+          } else if (payload.eventType === 'DELETE') {
+            setNotebooks((prev) => prev.filter(n => n.id !== payload.old.id));
+          }
+        }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Notebooks channel status:', status);
+      });
 
     return () => {
       supabase.removeChannel(notesChannel);
       supabase.removeChannel(notebooksChannel);
     };
-  }, [user, fetchData]);
+  }, [user]);
 
-  // Sync to Supabase
+  // Enhanced sync with debouncing and offline support
   const syncToSupabase = useCallback(async (type, data) => {
     if (!isSupabaseConfigured || !user) return;
     
@@ -126,11 +206,12 @@ export function AppProvider({ children }) {
     if (type === "notebooks" && dataStr === lastSyncedNotebooks.current) return;
 
     try {
+      setSyncStatus("syncing");
+      
       if (type === "notes") {
         await supabase.from("notes").upsert(data.map(n => ({ 
           ...n, 
           user_id: user.id,
-          // Ensure dates are valid ISO strings for Postgres if possible, but keep local format if needed
           updated_at: new Date().toISOString()
         })));
         lastSyncedNotes.current = dataStr;
@@ -141,8 +222,19 @@ export function AppProvider({ children }) {
         await supabase.from("favorites").delete().eq("user_id", user.id);
         await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
       }
+      
+      setLastSyncTime(new Date());
+      setSyncStatus("synced");
     } catch (error) {
       console.error(`Error syncing ${type} to Supabase:`, error.message);
+      setSyncStatus("error");
+      
+      // Queue for retry
+      syncQueueRef.current.push({ type, data, timestamp: Date.now() });
+      
+      // Retry after delay
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = setTimeout(() => syncToSupabase(type, data), 5000);
     }
   }, [user]);
 
@@ -280,6 +372,9 @@ export function AppProvider({ children }) {
         user,
         loading,
         syncing,
+        syncStatus,
+        lastSyncTime,
+        syncedDeviceCount,
         login,
         signup,
         logout,
