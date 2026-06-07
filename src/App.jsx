@@ -20,6 +20,7 @@ import WhatsNewModal from "./components/WhatsNewModal";
 import { AppProvider, useAppContext } from "./hooks/useAppContext";
 import { ToastProvider } from "./components/Toast";
 import { Loader2 } from "lucide-react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAppContext();
@@ -98,7 +99,9 @@ export default function App() {
   return (
     <ToastProvider>
       <AppProvider>
-        <AppContent />
+        <ErrorBoundary>
+          <AppContent />
+        </ErrorBoundary>
       </AppProvider>
     </ToastProvider>
   );

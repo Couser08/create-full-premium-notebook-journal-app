@@ -45,19 +45,37 @@ export function AppProvider({ children }) {
   // Fallback to local data only for "Mock Mode"
   const [notebooks, setNotebooks] = useState(() => {
     if (isSupabaseConfigured) return [];
-    const saved = window.localStorage.getItem("app-notebooks");
-    return saved ? JSON.parse(saved) : initialNotebooks;
+    try {
+      const saved = window.localStorage.getItem("app-notebooks");
+      const parsed = saved ? JSON.parse(saved) : initialNotebooks;
+      return Array.isArray(parsed) ? parsed : initialNotebooks;
+    } catch (e) {
+      console.warn("Failed to parse notebooks from localStorage", e);
+      return initialNotebooks;
+    }
   });
 
   const [notes, setNotes] = useState(() => {
     if (isSupabaseConfigured) return [];
-    const saved = window.localStorage.getItem("app-notes");
-    return saved ? JSON.parse(saved) : [...pinnedNotes, ...recentNotes];
+    try {
+      const saved = window.localStorage.getItem("app-notes");
+      const parsed = saved ? JSON.parse(saved) : [...pinnedNotes, ...recentNotes];
+      return Array.isArray(parsed) ? parsed : [...pinnedNotes, ...recentNotes];
+    } catch (e) {
+      console.warn("Failed to parse notes from localStorage", e);
+      return [...pinnedNotes, ...recentNotes];
+    }
   });
 
   const [favorites, setFavorites] = useState(() => {
-    const saved = window.localStorage.getItem("app-favorites");
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = window.localStorage.getItem("app-favorites");
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.warn("Failed to parse favorites from localStorage", e);
+      return [];
+    }
   });
 
   const [focusMode, setFocusMode] = useState(false);

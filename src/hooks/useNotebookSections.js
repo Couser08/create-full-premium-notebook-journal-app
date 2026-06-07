@@ -114,10 +114,10 @@ export function useNotebookSections({ storageKey, initialData, defaults, onSync 
             const firstPage = createPage("Page 1", parsed);
             return { activePageId: firstPage.id, pages: [firstPage] };
           }
-          if (parsed.pages) return parsed;
+          if (parsed && parsed.pages) return parsed;
         }
       } catch (e) {
-        console.error("Error loading from LocalStorage:", e);
+        console.warn("Failed to parse notebook sections from localStorage", e);
       }
     }
 
