@@ -71,6 +71,48 @@ export function AppProvider({ children }) {
     }
   }, []);
 
+  // Enhanced sync with debouncing and offline support
+  const syncToSupabase = useCallback(async (type, data) => {
+    if (!isSupabaseConfigured || !user) return;
+    
+    // Prevent sync if data hasn't actually changed from last fetch/sync
+    const dataStr = JSON.stringify(data);
+    if (type === "notes" && dataStr === lastSyncedNotes.current) return;
+    if (type === "notebooks" && dataStr === lastSyncedNotebooks.current) return;
+
+    try {
+      setSyncStatus("syncing");
+      
+      if (type === "notes") {
+        await supabase.from("notes").upsert(data.map(n => ({ 
+          ...n, 
+          user_id: user.id,
+          updated_at: new Date().toISOString()
+        })));
+        lastSyncedNotes.current = dataStr;
+      } else if (type === "notebooks") {
+        await supabase.from("notebooks").upsert(data.map(nb => ({ ...nb, user_id: user.id })));
+        lastSyncedNotebooks.current = dataStr;
+      } else if (type === "favorites") {
+        await supabase.from("favorites").delete().eq("user_id", user.id);
+        await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
+      }
+      
+      setLastSyncTime(new Date());
+      setSyncStatus("synced");
+    } catch (error) {
+      console.error(`Error syncing ${type} to Supabase:`, error.message);
+      setSyncStatus("error");
+      
+      // Queue for retry
+      syncQueueRef.current.push({ type, data, timestamp: Date.now() });
+      
+      // Retry after delay
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+      syncTimeoutRef.current = setTimeout(() => syncToSupabase(type, data), 5000);
+    }
+  }, [user]);
+
   // Handle online/offline state
   useEffect(() => {
     const handleOnline = () => {
@@ -110,6 +152,8 @@ export function AppProvider({ children }) {
       window.removeEventListener('offline', handleOffline);
     };
   }, [user, fetchData, syncToSupabase]);
+
+  // Auth session management
   useEffect(() => {
     if (isSupabaseConfigured) {
       supabase.auth.getSession().then(({ data: { session } }) => {
@@ -195,50 +239,6 @@ export function AppProvider({ children }) {
       supabase.removeChannel(notebooksChannel);
     };
   }, [user]);
-
-  // Enhanced sync with debouncing and offline support
-  const syncToSupabase = useCallback(async (type, data) => {
-    if (!isSupabaseConfigured || !user) return;
-    
-    // Prevent sync if data hasn't actually changed from last fetch/sync
-    const dataStr = JSON.stringify(data);
-    if (type === "notes" && dataStr === lastSyncedNotes.current) return;
-    if (type === "notebooks" && dataStr === lastSyncedNotebooks.current) return;
-
-    try {
-      setSyncStatus("syncing");
-      
-      if (type === "notes") {
-        await supabase.from("notes").upsert(data.map(n => ({ 
-          ...n, 
-          user_id: user.id,
-          updated_at: new Date().toISOString()
-        })));
-        lastSyncedNotes.current = dataStr;
-      } else if (type === "notebooks") {
-        await supabase.from("notebooks").upsert(data.map(nb => ({ ...nb, user_id: user.id })));
-        lastSyncedNotebooks.current = dataStr;
-      } else if (type === "favorites") {
-        await supabase.from("favorites").delete().eq("user_id", user.id);
-        await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
-      }
-      
-      setLastSyncTime(new Date());
-      setSyncStatus("synced");
-    } catch (error) {
-      console.error(`Error syncing ${type} to Supabase:`, error.message);
-      setSyncStatus("error");
-      
-      // Queue for retry
-      syncQueueRef.current.push({ type, data, timestamp: Date.now() });
-      
-      // Retry after delay
-      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = setTimeout(() => syncToSupabase(type, data), 5000);
-    }
-  }, [user]);
-
-  // Persistence effects
   useEffect(() => {
     window.localStorage.setItem("app-notebooks", JSON.stringify(notebooks));
     const timeout = setTimeout(() => {
