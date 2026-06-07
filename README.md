@@ -31,7 +31,54 @@ A modern, high-performance, and visually stunning Notebook and Journaling applic
 - **Icons**: Lucide React
 - **Syntax Highlighting**: Prism.js
 - **State Management**: React Context API
-- **Persistence**: LocalStorage (Supabase-ready)
+- **Persistence**: Supabase (PostgreSQL) & LocalStorage fallback
+
+## 🗄️ Supabase Database Setup
+
+To enable cloud storage, create the following tables in your Supabase project:
+
+```sql
+-- Notes Table
+create table notes (
+  id text primary key,
+  user_id uuid references auth.users not null,
+  title text not null,
+  body text,
+  date text,
+  notebook text,
+  tags jsonb default '[]'::jsonb,
+  content jsonb,
+  is_archived boolean default false,
+  deleted_at timestamp with time zone,
+  created_at timestamp with time zone default now()
+);
+
+-- Notebooks Table
+create table notebooks (
+  id text primary key,
+  user_id uuid references auth.users not null,
+  label text not null,
+  count integer default 0,
+  color text
+);
+
+-- Favorites Table
+create table favorites (
+  user_id uuid references auth.users not null,
+  note_id text not null,
+  primary key (user_id, note_id)
+);
+
+-- Enable RLS (Row Level Security)
+alter table notes enable row level security;
+alter table notebooks enable row level security;
+alter table favorites enable row level security;
+
+-- Create policies (simplified)
+create policy "Users can manage their own notes" on notes for all using (auth.uid() = user_id);
+create policy "Users can manage their own notebooks" on notebooks for all using (auth.uid() = user_id);
+create policy "Users can manage their own favorites" on favorites for all using (auth.uid() = user_id);
+```
 
 ## 🚀 Getting Started
 
@@ -43,12 +90,12 @@ A modern, high-performance, and visually stunning Notebook and Journaling applic
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/premium-notebook-app.git
+   git clone https://github.com/Couser08/create-full-premium-notebook-journal-app.git
    ```
 
 2. Navigate to the project directory:
    ```bash
-   cd premium-notebook-app
+   cd create-full-premium-notebook-journal-app
    ```
 
 3. Install dependencies:

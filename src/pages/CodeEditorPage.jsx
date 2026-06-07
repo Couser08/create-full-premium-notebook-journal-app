@@ -11,16 +11,20 @@ import { useNotebookSections } from "../hooks/useNotebookSections";
 import { useAppContext } from "../hooks/useAppContext";
 
 export default function CodeEditorPage() {
-  const { noteId = "debounce" } = useParams();
+  const { noteId } = useParams();
   const navigate = useNavigate();
-  const { deleteNote } = useAppContext();
+  const { notes, updateNote, deleteNote } = useAppContext();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [title, setTitle] = useState(
-    () => window.localStorage.getItem(`note-title-${noteId}`) || "Untitled Code Snippet"
-  );
-  const [tags, setTags] = useState(
-    () => JSON.parse(window.localStorage.getItem(`note-tags-${noteId}`) || '["#javascript","#utility","#interview"]')
-  );
+  
+  const currentNote = notes.find(n => n.id === noteId) || {
+    id: noteId,
+    title: "Untitled Code Snippet",
+    tags: ["#javascript","#utility","#interview"],
+    content: null
+  };
+
+  const [title, setTitle] = useState(currentNote.title);
+  const [tags, setTags] = useState(currentNote.tags || []);
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -30,11 +34,16 @@ export default function CodeEditorPage() {
   const { 
     sections, addSection, removeSection, updateSection, moveSection, resetSections,
     pages, activePageId, addPage, removePage, renamePage, switchPage
-  } = useNotebookSections(`note-sections-${noteId}`, codeSections);
+  } = useNotebookSections({
+    storageKey: `note-sections-${noteId}`,
+    initialData: currentNote.content,
+    defaults: codeSections,
+    onSync: (content) => updateNote(noteId, { content })
+  });
 
   function saveTitle(value) {
     setTitle(value);
-    window.localStorage.setItem(`note-title-${noteId}`, value);
+    updateNote(noteId, { title: value });
   }
 
   function handleDelete() { setShowDeleteConfirm(true); }
@@ -45,7 +54,7 @@ export default function CodeEditorPage() {
     if (!tagInput.trim()) return;
     const next = [...tags, tagInput.trim()];
     setTags(next);
-    window.localStorage.setItem(`note-tags-${noteId}`, JSON.stringify(next));
+    updateNote(noteId, { tags: next });
     addToast("Tag added");
     setTagInput("");
     setShowTagInput(false);

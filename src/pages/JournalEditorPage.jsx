@@ -11,20 +11,22 @@ import { useNotebookSections } from "../hooks/useNotebookSections";
 import { useAppContext } from "../hooks/useAppContext";
 
 export default function JournalEditorPage() {
-  const { noteId = "project-plan" } = useParams();
+  const { noteId } = useParams();
   const navigate = useNavigate();
-  const { deleteNote } = useAppContext();
+  const { notes, updateNote, deleteNote } = useAppContext();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [title, setTitle] = useState(
-    () => window.localStorage.getItem(`note-title-${noteId}`) ||
-      (noteId === "daily-journal" ? "Daily Journal" : "Untitled Note")
-  );
-  const [date, setDate] = useState(
-    () => window.localStorage.getItem(`note-date-${noteId}`) || new Date().toLocaleString()
-  );
-  const [tags, setTags] = useState(
-    () => JSON.parse(window.localStorage.getItem(`note-tags-${noteId}`) || "[]")
-  );
+  
+  const currentNote = notes.find(n => n.id === noteId) || {
+    id: noteId,
+    title: "Untitled Note",
+    tags: [],
+    date: new Date().toLocaleString(),
+    content: null
+  };
+
+  const [title, setTitle] = useState(currentNote.title);
+  const [date, setDate] = useState(currentNote.date);
+  const [tags, setTags] = useState(currentNote.tags || []);
   const [tagInput, setTagInput] = useState("");
   const [showTagInput, setShowTagInput] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -35,15 +37,20 @@ export default function JournalEditorPage() {
   const { 
     sections, addSection, removeSection, updateSection, moveSection, resetSections,
     pages, activePageId, addPage, removePage, renamePage, switchPage
-  } = useNotebookSections(`note-sections-${noteId}`, journalSections);
+  } = useNotebookSections({
+    storageKey: `note-sections-${noteId}`,
+    initialData: currentNote.content,
+    defaults: journalSections,
+    onSync: (content) => updateNote(noteId, { content })
+  });
 
   function saveTitle(value) {
     setTitle(value);
-    window.localStorage.setItem(`note-title-${noteId}`, value);
+    updateNote(noteId, { title: value });
   }
   function saveDate(value) {
     setDate(value);
-    window.localStorage.setItem(`note-date-${noteId}`, value);
+    updateNote(noteId, { date: value });
   }
   function handleDelete() { setShowDeleteConfirm(true); }
   function confirmDelete() {
@@ -56,7 +63,7 @@ export default function JournalEditorPage() {
     if (!tagInput.trim()) return;
     const next = [...tags, tagInput.trim()];
     setTags(next);
-    window.localStorage.setItem(`note-tags-${noteId}`, JSON.stringify(next));
+    updateNote(noteId, { tags: next });
     addToast("Tag added");
     setTagInput("");
     setShowTagInput(false);

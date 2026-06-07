@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 
 function createSection(type, overrides = {}) {
   const base = {
@@ -27,7 +27,16 @@ function createSection(type, overrides = {}) {
       label: "New Code Snippet",
       language: "JS",
       filename: "snippet.js",
-      code: "const note = createSection(\"journal\");\nnote.pin();\nnote.save();"
+      code: `/**
+ * JavaScript Utility
+ */
+function debounce(fn, delay) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}`
     },
     checklist: {
       label: "New Checklist",
@@ -80,37 +89,61 @@ function hydrateDefaults(defaults) {
   return defaults.map((section) => createSection(section.type, { ...section, custom: false }));
 }
 
-export function useNotebookSections(storageKey, defaults) {
-  const initialSections = useMemo(() => hydrateDefaults(defaults), [defaults]);
+/**
+ * useNotebookSections
+ * @param {object} options
+ * @param {string} options.storageKey - Optional fallback for LocalStorage
+ * @param {object} options.initialData - The full content object { activePageId, pages }
+ * @param {array} options.defaults - Default sections if no data exists
+ * @param {function} options.onSync - Callback to save data back to master state
+ */
+export function useNotebookSections({ storageKey, initialData, defaults, onSync }) {
+  const initialSections = useMemo(() => hydrateDefaults(defaults || []), [defaults]);
   
   const [data, setData] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem(storageKey);
-      if (!saved) {
-        const firstPage = createPage("Page 1", initialSections);
-        return { activePageId: firstPage.id, pages: [firstPage] };
+    // 1. Use initialData if provided (from AppContext)
+    if (initialData && initialData.pages) return initialData;
+
+    // 2. Fallback to LocalStorage if storageKey is provided
+    if (storageKey) {
+      try {
+        const saved = window.localStorage.getItem(storageKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            const firstPage = createPage("Page 1", parsed);
+            return { activePageId: firstPage.id, pages: [firstPage] };
+          }
+          if (parsed.pages) return parsed;
+        }
+      } catch (e) {
+        console.error("Error loading from LocalStorage:", e);
       }
-      const parsed = JSON.parse(saved);
-      // Migration: if it's an array, it's the old format
-      if (Array.isArray(parsed)) {
-        const firstPage = createPage("Page 1", parsed);
-        return { activePageId: firstPage.id, pages: [firstPage] };
-      }
-      // If it's an object but missing pages
-      if (!parsed.pages) {
-        const firstPage = createPage("Page 1", initialSections);
-        return { activePageId: firstPage.id, pages: [firstPage] };
-      }
-      return parsed;
-    } catch {
-      const firstPage = createPage("Page 1", initialSections);
-      return { activePageId: firstPage.id, pages: [firstPage] };
     }
+
+    // 3. Default state
+    const firstPage = createPage("Page 1", initialSections);
+    return { activePageId: firstPage.id, pages: [firstPage] };
   });
 
+  const isFirstMount = useRef(true);
+
   useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(data));
-  }, [data, storageKey]);
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
+    
+    // Sync to LocalStorage fallback
+    if (storageKey) {
+      window.localStorage.setItem(storageKey, JSON.stringify(data));
+    }
+    
+    // Sync to Master State (Supabase/AppContext)
+    if (onSync) {
+      onSync(data);
+    }
+  }, [data, storageKey, onSync]);
 
   const activePage = data.pages.find(p => p.id === data.activePageId) || data.pages[0];
   const sections = activePage?.sections || [];
@@ -175,7 +208,6 @@ export function useNotebookSections(storageKey, defaults) {
     }));
   }
 
-  // Page management
   function addPage(title) {
     const newPage = createPage(title || `Page ${data.pages.length + 1}`, initialSections);
     setData(current => ({
@@ -215,7 +247,6 @@ export function useNotebookSections(storageKey, defaults) {
     updateSection, 
     moveSection, 
     resetSections,
-    // Page management
     pages: data.pages,
     activePageId: data.activePageId,
     addPage,

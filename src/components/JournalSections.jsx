@@ -48,6 +48,82 @@ const LANG_MAP = {
   python: "python", css: "css", html: "markup",
 };
 
+const CODE_TEMPLATES = {
+  JS: `/**
+ * JavaScript Utility
+ */
+function debounce(fn, delay) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}`,
+  TS: `/**
+ * TypeScript Interface & Logic
+ */
+interface User {
+  id: string;
+  name: string;
+  email?: string;
+}
+
+const fetchUser = (id: string): Promise<User> => {
+  return Promise.resolve({ id, name: "Rahul Tungariya" });
+};`,
+  JSX: `import React, { useState } from 'react';
+
+/**
+ * Modern React Component
+ */
+export default function Counter() {
+  const [count, setCount] = useState(0);
+  
+  return (
+    <div className="p-4 bg-violet-50 rounded-xl shadow-sm">
+      <h2 className="text-xl font-bold">Count: {count}</h2>
+      <button 
+        onClick={() => setCount(c => c + 1)}
+        className="mt-2 px-4 py-2 bg-violet-600 text-white rounded-lg"
+      >
+        Increment
+      </button>
+    </div>
+  );
+}`,
+  PY: `def hello_world():
+    """
+    Python Greeting Utility
+    """
+    print("Hello from the Premium Notebook!")
+
+if __name__ == "__main__":
+    hello_world()`,
+  CSS: `/* Modern Utility Classes */
+.premium-card {
+  display: flex;
+  flex-direction: column;
+  padding: 2rem;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  border-radius: 1.5rem;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.1);
+}`,
+  HTML: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Premium Notebook Preview</title>
+</head>
+<body>
+  <div id="root">
+    <h1>Welcome to your new Journal</h1>
+    <p>Start writing your next big idea...</p>
+  </div>
+</body>
+</html>`,
+};
+
 /* ════════════════════════════════════════════════════════════
    RichText — contentEditable with formatting toolbar support
    Used by TextSection and StickySection
@@ -380,7 +456,12 @@ function CodeSection({ section, onUpdate, isEditMode }) {
                       <button
                         key={lang}
                         onClick={() => {
-                          onUpdate(section.id, { language: lang });
+                          const patch = { language: lang };
+                          // Only replace if empty or default or user is explicitly switching a fresh block
+                          if (!section.code || section.code.includes("createSection") || section.code.includes("/**\n * Debounce Utility")) {
+                             patch.code = CODE_TEMPLATES[lang];
+                          }
+                          onUpdate(section.id, patch);
                           setLangOpen(false);
                         }}
                         className={cn(

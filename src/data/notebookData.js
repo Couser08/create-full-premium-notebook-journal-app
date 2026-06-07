@@ -132,7 +132,16 @@ export const codeSections = [
     label: "Code Snippet",
     language: "JS",
     filename: "debounce.js",
-    code: "/**\n * Debounce Utility\n * Delays function execution until after wait time has passed.\n */\nfunction debounce(fn, delay) {\n  let timer;\n  return function (...args) {\n    clearTimeout(timer);\n    timer = setTimeout(() => fn.apply(this, args), delay);\n  };\n}\n"
+    code: `/**
+ * JavaScript Utility
+ */
+function debounce(fn, delay) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}`
   }
 ];
 

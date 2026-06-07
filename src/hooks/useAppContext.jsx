@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { notebooks as initialNotebooks, pinnedNotes, recentNotes } from "../data/notebookData";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -7,6 +7,7 @@ const AppContext = createContext();
 export function AppProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   const [notebooks, setNotebooks] = useState(() => {
     const saved = window.localStorage.getItem("app-notebooks");
@@ -25,16 +26,45 @@ export function AppProvider({ children }) {
 
   const [focusMode, setFocusMode] = useState(false);
 
+  // Fetch data from Supabase
+  const fetchData = useCallback(async (userId) => {
+    if (!isSupabaseConfigured || !userId) return;
+    setSyncing(true);
+    try {
+      const [
+        { data: notesData },
+        { data: notebooksData },
+        { data: favoritesData }
+      ] = await Promise.all([
+        supabase.from("notes").select("*").eq("user_id", userId),
+        supabase.from("notebooks").select("*").eq("user_id", userId),
+        supabase.from("favorites").select("*").eq("user_id", userId)
+      ]);
+
+      if (notesData) setNotes(notesData);
+      if (notebooksData) setNotebooks(notebooksData);
+      if (favoritesData) setFavorites(favoritesData.map(f => f.note_id));
+    } catch (error) {
+      console.error("Error fetching data from Supabase:", error);
+    } finally {
+      setSyncing(false);
+    }
+  }, []);
+
   // Auth session management
   useEffect(() => {
     if (isSupabaseConfigured) {
       supabase.auth.getSession().then(({ data: { session } }) => {
-        setUser(session?.user ?? null);
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+        if (currentUser) fetchData(currentUser.id);
         setLoading(false);
       });
 
       const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+        if (currentUser) fetchData(currentUser.id);
       });
 
       return () => subscription.unsubscribe();
@@ -43,71 +73,46 @@ export function AppProvider({ children }) {
       if (savedUser) setUser(JSON.parse(savedUser));
       setLoading(false);
     }
-  }, []);
+  }, [fetchData]);
 
-  const signup = async (email, password, fullName) => {
-    if (isSupabaseConfigured) {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { full_name: fullName } }
-      });
-      if (error) throw error;
-      return data;
-    } else {
-      // Mock signup
-      const newUser = { id: "mock-id", email, user_metadata: { full_name: fullName } };
-      window.localStorage.setItem("app-user", JSON.stringify(newUser));
-      setUser(newUser);
-      return { user: newUser };
+  // Sync to Supabase
+  const syncToSupabase = useCallback(async (type, data) => {
+    if (!isSupabaseConfigured || !user) return;
+    try {
+      if (type === "notes") {
+        await supabase.from("notes").upsert(data.map(n => ({ ...n, user_id: user.id })));
+      } else if (type === "notebooks") {
+        await supabase.from("notebooks").upsert(data.map(nb => ({ ...nb, user_id: user.id })));
+      } else if (type === "favorites") {
+        // Delete old favorites and insert new ones
+        await supabase.from("favorites").delete().eq("user_id", user.id);
+        await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
+      }
+    } catch (error) {
+      console.error(`Error syncing ${type} to Supabase:`, error);
     }
-  };
+  }, [user]);
 
-  const login = async (email, password) => {
-    if (isSupabaseConfigured) {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      return data;
-    } else {
-      // Mock login
-      const mockUser = { id: "mock-id", email, user_metadata: { full_name: "Mock User" } };
-      window.localStorage.setItem("app-user", JSON.stringify(mockUser));
-      setUser(mockUser);
-      return { user: mockUser };
-    }
-  };
-
-  const logout = async () => {
-    if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
-    } else {
-      window.localStorage.removeItem("app-user");
-      setUser(null);
-    }
-  };
-
+  // Persistence effects
   useEffect(() => {
     window.localStorage.setItem("app-notebooks", JSON.stringify(notebooks));
-  }, [notebooks]);
+    if (user) syncToSupabase("notebooks", notebooks);
+  }, [notebooks, user, syncToSupabase]);
 
   useEffect(() => {
     window.localStorage.setItem("app-notes", JSON.stringify(notes));
-  }, [notes]);
+    if (user) syncToSupabase("notes", notes);
+  }, [notes, user, syncToSupabase]);
 
   useEffect(() => {
     window.localStorage.setItem("app-favorites", JSON.stringify(favorites));
-  }, [favorites]);
-
-  useEffect(() => {
-    if (isSupabaseConfigured && user) {
-      // In a real app, you would sync data here
-      // e.g. supabase.from('notes').upsert(notes)
-    }
-  }, [notes, notebooks, favorites, user]);
+    if (user) syncToSupabase("favorites", favorites);
+  }, [favorites, user, syncToSupabase]);
 
   const addNote = (note) => {
     const newNote = {
       ...note,
+      id: note.id || `note-${Date.now()}`,
       createdAt: note.createdAt || new Date().toISOString(),
       date: note.date || new Date().toLocaleString('default', { month: 'short', day: 'numeric' })
     };
@@ -115,7 +120,6 @@ export function AppProvider({ children }) {
   };
 
   const deleteNote = (noteId) => {
-    // Soft delete: move to trash
     setNotes((prev) => prev.map((n) => n.id === noteId ? { ...n, deletedAt: new Date().toISOString() } : n));
     setFavorites((prev) => prev.filter((id) => id !== noteId));
   };
@@ -131,6 +135,9 @@ export function AppProvider({ children }) {
   };
 
   const permanentlyDeleteNote = (noteId) => {
+    if (isSupabaseConfigured && user) {
+      supabase.from("notes").delete().eq("id", noteId).eq("user_id", user.id).then();
+    }
     setNotes((prev) => prev.filter((n) => n.id !== noteId));
   };
 
@@ -157,7 +164,52 @@ export function AppProvider({ children }) {
   };
 
   const deleteNotebook = (notebookId) => {
+    if (isSupabaseConfigured && user) {
+      supabase.from("notebooks").delete().eq("id", notebookId).eq("user_id", user.id).then();
+    }
     setNotebooks((prev) => prev.filter((n) => n.id !== notebookId));
+  };
+
+  const signup = async (email, password, fullName) => {
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name: fullName } }
+      });
+      if (error) throw error;
+      return data;
+    } else {
+      const newUser = { id: "mock-id", email, user_metadata: { full_name: fullName } };
+      window.localStorage.setItem("app-user", JSON.stringify(newUser));
+      setUser(newUser);
+      return { user: newUser };
+    }
+  };
+
+  const login = async (email, password) => {
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      return data;
+    } else {
+      const mockUser = { id: "mock-id", email, user_metadata: { full_name: "Mock User" } };
+      window.localStorage.setItem("app-user", JSON.stringify(mockUser));
+      setUser(mockUser);
+      return { user: mockUser };
+    }
+  };
+
+  const logout = async () => {
+    if (isSupabaseConfigured) {
+      await supabase.auth.signOut();
+    } else {
+      window.localStorage.removeItem("app-user");
+      setUser(null);
+    }
+    setNotes([...pinnedNotes, ...recentNotes]);
+    setNotebooks(initialNotebooks);
+    setFavorites([]);
   };
 
   return (
@@ -165,6 +217,7 @@ export function AppProvider({ children }) {
       value={{
         user,
         loading,
+        syncing,
         login,
         signup,
         logout,
