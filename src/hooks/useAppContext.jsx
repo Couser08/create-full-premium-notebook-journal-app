@@ -4,13 +4,42 @@ import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
 const AppContext = createContext();
 
+// Helper to strip non-DB columns before sync
+function cleanNote(n, userId) {
+  return {
+    id: n.id,
+    user_id: userId,
+    title: n.title || "Untitled",
+    body: n.body || "",
+    date: n.date || "",
+    notebook: n.notebook || "",
+    tags: n.tags || [],
+    content: n.content || null,
+    is_archived: n.isArchived || false,
+    deleted_at: n.deletedAt || null,
+    created_at: n.createdAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    color: n.color || null,
+    route: n.route || null,
+    icon_name: n.icon ? (typeof n.icon === 'string' ? n.icon : n.icon.name) : null
+  };
+}
+
+function cleanNotebook(nb, userId) {
+  return {
+    id: nb.id,
+    user_id: userId,
+    label: nb.label,
+    count: nb.count || 0,
+    color: nb.color || 'violet',
+    description: nb.description || ""
+  };
+}
+
 export function AppProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState("synced"); // syncing, synced, error, offline
-  const [lastSyncTime, setLastSyncTime] = useState(null);
-  const [syncedDeviceCount, setSyncedDeviceCount] = useState(1);
 
   const [notebooks, setNotebooks] = useState(() => {
     const saved = window.localStorage.getItem("app-notebooks");
@@ -29,14 +58,9 @@ export function AppProvider({ children }) {
 
   const [focusMode, setFocusMode] = useState(false);
   
-  // Refs to prevent recursive sync loops and track sync queue
   const lastSyncedNotes = useRef(null);
   const lastSyncedNotebooks = useRef(null);
-  const syncQueueRef = useRef([]);
-  const syncTimeoutRef = useRef(null);
-  const isOnlineRef = useRef(true);
 
-  // Fetch data from Supabase
   const fetchData = useCallback(async (userId) => {
     if (!isSupabaseConfigured || !userId) return;
     setSyncing(true);
@@ -56,7 +80,12 @@ export function AppProvider({ children }) {
       if (favoritesError) throw favoritesError;
 
       if (notesData && notesData.length > 0) {
-        setNotes(notesData);
+        setNotes(notesData.map(n => ({
+          ...n,
+          isArchived: n.is_archived,
+          deletedAt: n.deleted_at,
+          createdAt: n.created_at
+        })));
         lastSyncedNotes.current = JSON.stringify(notesData);
       }
       if (notebooksData && notebooksData.length > 0) {
@@ -65,95 +94,12 @@ export function AppProvider({ children }) {
       }
       if (favoritesData) setFavorites(favoritesData.map(f => f.note_id));
     } catch (error) {
-      console.error("Error fetching data from Supabase:", error.message);
+      console.error("Supabase Fetch Error:", error.message);
     } finally {
       setSyncing(false);
     }
   }, []);
 
-  // Enhanced sync with debouncing and offline support
-  const syncToSupabase = useCallback(async (type, data) => {
-    if (!isSupabaseConfigured || !user) return;
-    
-    // Prevent sync if data hasn't actually changed from last fetch/sync
-    const dataStr = JSON.stringify(data);
-    if (type === "notes" && dataStr === lastSyncedNotes.current) return;
-    if (type === "notebooks" && dataStr === lastSyncedNotebooks.current) return;
-
-    try {
-      setSyncStatus("syncing");
-      
-      if (type === "notes") {
-        await supabase.from("notes").upsert(data.map(n => ({ 
-          ...n, 
-          user_id: user.id,
-          updated_at: new Date().toISOString()
-        })));
-        lastSyncedNotes.current = dataStr;
-      } else if (type === "notebooks") {
-        await supabase.from("notebooks").upsert(data.map(nb => ({ ...nb, user_id: user.id })));
-        lastSyncedNotebooks.current = dataStr;
-      } else if (type === "favorites") {
-        await supabase.from("favorites").delete().eq("user_id", user.id);
-        await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
-      }
-      
-      setLastSyncTime(new Date());
-      setSyncStatus("synced");
-    } catch (error) {
-      console.error(`Error syncing ${type} to Supabase:`, error.message);
-      setSyncStatus("error");
-      
-      // Queue for retry
-      syncQueueRef.current.push({ type, data, timestamp: Date.now() });
-      
-      // Retry after delay
-      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-      syncTimeoutRef.current = setTimeout(() => syncToSupabase(type, data), 5000);
-    }
-  }, [user]);
-
-  // Handle online/offline state
-  useEffect(() => {
-    const handleOnline = () => {
-      isOnlineRef.current = true;
-      setSyncStatus("syncing");
-      console.log('🌐 Back online - syncing queued changes');
-      
-      // Sync all queued items
-      if (syncQueueRef.current.length > 0) {
-        syncQueueRef.current.forEach(({ type, data }) => {
-          syncToSupabase(type, data);
-        });
-        syncQueueRef.current = [];
-      }
-      
-      // Refresh data
-      if (user) fetchData(user.id);
-    };
-
-    const handleOffline = () => {
-      isOnlineRef.current = false;
-      setSyncStatus("offline");
-      console.log('📴 Offline - queuing changes');
-    };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    // Check initial online status
-    if (!navigator.onLine) {
-      setSyncStatus("offline");
-      isOnlineRef.current = false;
-    }
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, [user, fetchData, syncToSupabase]);
-
-  // Auth session management
   useEffect(() => {
     if (isSupabaseConfigured) {
       supabase.auth.getSession().then(({ data: { session } }) => {
@@ -177,96 +123,81 @@ export function AppProvider({ children }) {
     }
   }, [fetchData]);
 
-  // Real-time subscriptions for cross-device sync with optimized payload handling
   useEffect(() => {
     if (!isSupabaseConfigured || !user) return;
 
     const notesChannel = supabase
-      .channel(`notes:${user.id}`)
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'notes', filter: `user_id=eq.${user.id}` }, 
-        (payload) => {
-          console.log('📱 Notes synced from another device:', payload.eventType);
-          setLastSyncTime(new Date());
-          // Refresh data from another device
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            // Add or update the specific note
-            setNotes((prev) => {
-              const existing = prev.find(n => n.id === payload.new.id);
-              if (existing) {
-                return prev.map(n => n.id === payload.new.id ? payload.new : n);
-              } else {
-                return [payload.new, ...prev];
-              }
-            });
-          } else if (payload.eventType === 'DELETE') {
-            setNotes((prev) => prev.filter(n => n.id !== payload.old.id));
-          }
-        }
+      .channel('public:notes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notes', filter: `user_id=eq.${user.id}` }, 
+        () => fetchData(user.id)
       )
-      .subscribe((status) => {
-        console.log('Notes channel status:', status);
-        setSyncedDeviceCount(status === 'SUBSCRIBED' ? 2 : 1);
-      });
+      .subscribe();
 
     const notebooksChannel = supabase
-      .channel(`notebooks:${user.id}`)
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'notebooks', filter: `user_id=eq.${user.id}` }, 
-        (payload) => {
-          console.log('📓 Notebooks synced from another device:', payload.eventType);
-          setLastSyncTime(new Date());
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            setNotebooks((prev) => {
-              const existing = prev.find(n => n.id === payload.new.id);
-              if (existing) {
-                return prev.map(n => n.id === payload.new.id ? payload.new : n);
-              } else {
-                return [...prev, payload.new];
-              }
-            });
-          } else if (payload.eventType === 'DELETE') {
-            setNotebooks((prev) => prev.filter(n => n.id !== payload.old.id));
-          }
-        }
+      .channel('public:notebooks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notebooks', filter: `user_id=eq.${user.id}` }, 
+        () => fetchData(user.id)
       )
-      .subscribe((status) => {
-        console.log('Notebooks channel status:', status);
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(notesChannel);
       supabase.removeChannel(notebooksChannel);
     };
+  }, [user, fetchData]);
+
+  const syncToSupabase = useCallback(async (type, data) => {
+    if (!isSupabaseConfigured || !user) return;
+    
+    try {
+      if (type === "notes") {
+        const cleaned = data.map(n => cleanNote(n, user.id));
+        const dataStr = JSON.stringify(cleaned);
+        if (dataStr === lastSyncedNotes.current) return;
+        
+        const { error } = await supabase.from("notes").upsert(cleaned);
+        if (error) throw error;
+        lastSyncedNotes.current = dataStr;
+      } else if (type === "notebooks") {
+        const cleaned = data.map(nb => cleanNotebook(nb, user.id));
+        const dataStr = JSON.stringify(cleaned);
+        if (dataStr === lastSyncedNotebooks.current) return;
+
+        const { error } = await supabase.from("notebooks").upsert(cleaned);
+        if (error) throw error;
+        lastSyncedNotebooks.current = dataStr;
+      } else if (type === "favorites") {
+        await supabase.from("favorites").delete().eq("user_id", user.id);
+        await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
+      }
+    } catch (error) {
+      console.error(`Supabase Sync Error (${type}):`, error.message);
+    }
   }, [user]);
+
   useEffect(() => {
     window.localStorage.setItem("app-notebooks", JSON.stringify(notebooks));
-    const timeout = setTimeout(() => {
-      if (user) syncToSupabase("notebooks", notebooks);
-    }, 1000);
+    const timeout = setTimeout(() => syncToSupabase("notebooks", notebooks), 1000);
     return () => clearTimeout(timeout);
-  }, [notebooks, user, syncToSupabase]);
+  }, [notebooks, syncToSupabase]);
 
   useEffect(() => {
     window.localStorage.setItem("app-notes", JSON.stringify(notes));
-    const timeout = setTimeout(() => {
-      if (user) syncToSupabase("notes", notes);
-    }, 1000);
+    const timeout = setTimeout(() => syncToSupabase("notes", notes), 1000);
     return () => clearTimeout(timeout);
-  }, [notes, user, syncToSupabase]);
+  }, [notes, syncToSupabase]);
 
   useEffect(() => {
     window.localStorage.setItem("app-favorites", JSON.stringify(favorites));
-    if (user) syncToSupabase("favorites", favorites);
-  }, [favorites, user, syncToSupabase]);
+    syncToSupabase("favorites", favorites);
+  }, [favorites, syncToSupabase]);
 
   const addNote = (note) => {
     const newNote = {
       ...note,
-      id: note.id || `note-${Date.now()}`,
-      createdAt: note.createdAt || new Date().toISOString(),
-      date: note.date || new Date().toLocaleString('default', { month: 'short', day: 'numeric' }),
-      user_id: user?.id
+      id: note.id || `note-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: new Date().toISOString(),
+      date: new Date().toLocaleString('default', { month: 'short', day: 'numeric' })
     };
     setNotes((prev) => [newNote, ...prev]);
   };
@@ -312,7 +243,7 @@ export function AppProvider({ children }) {
   };
 
   const addNotebook = (notebook) => {
-    setNotebooks((prev) => [...prev, { ...notebook, user_id: user?.id }]);
+    setNotebooks((prev) => [...prev, notebook]);
   };
 
   const deleteNotebook = (notebookId) => {
@@ -372,9 +303,6 @@ export function AppProvider({ children }) {
         user,
         loading,
         syncing,
-        syncStatus,
-        lastSyncTime,
-        syncedDeviceCount,
         login,
         signup,
         logout,

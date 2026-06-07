@@ -57,7 +57,8 @@ export default function CreateNotebookModal({ open, onClose, onCreated }) {
   function handleCreate() {
     const label = name.trim();
     if (!label) return;
-    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || `nb-${Date.now()}`;
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "nb";
+    const id = `${slug}-${Math.random().toString(36).substring(2, 9)}`;
     const notebook = { id, label, count: 0, color, description: desc };
     addNotebook(notebook);
     onClose();
