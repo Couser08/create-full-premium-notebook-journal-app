@@ -115,6 +115,32 @@ To create a production-ready build:
 npm run build
 ```
 
+## 🚀 Deployment
+
+### Deploy to Vercel (Recommended)
+
+1. **Push to GitHub** - Your code must be on GitHub
+2. **Connect to Vercel** - Visit https://vercel.com and import your repository
+3. **Automatic Deployment** - Vercel will automatically build and deploy on each push
+
+**Important**: This project includes `vercel.json` which handles SPA routing properly. If you get a 404 error on page reload, the vercel.json configuration will fix it.
+
+### Environment Variables on Vercel
+
+1. Go to your Vercel project settings
+2. Add these environment variables:
+   - `VITE_SUPABASE_URL` - Your Supabase project URL
+   - `VITE_SUPABASE_ANON_KEY` - Your Supabase anon key
+
+### Local Testing Before Deployment
+
+```bash
+npm run build
+npm run preview
+```
+
+This will serve the production build locally at http://localhost:4173
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import { notebooks as initialNotebooks, pinnedNotes, recentNotes } from "../data/notebookData";
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
 
@@ -25,6 +25,10 @@ export function AppProvider({ children }) {
   });
 
   const [focusMode, setFocusMode] = useState(false);
+  
+  // Refs to prevent recursive sync loops
+  const lastSyncedNotes = useRef(null);
+  const lastSyncedNotebooks = useRef(null);
 
   // Fetch data from Supabase
   const fetchData = useCallback(async (userId) => {
@@ -32,20 +36,30 @@ export function AppProvider({ children }) {
     setSyncing(true);
     try {
       const [
-        { data: notesData },
-        { data: notebooksData },
-        { data: favoritesData }
+        { data: notesData, error: notesError },
+        { data: notebooksData, error: notebooksError },
+        { data: favoritesData, error: favoritesError }
       ] = await Promise.all([
-        supabase.from("notes").select("*").eq("user_id", userId),
+        supabase.from("notes").select("*").eq("user_id", userId).order('created_at', { ascending: false }),
         supabase.from("notebooks").select("*").eq("user_id", userId),
         supabase.from("favorites").select("*").eq("user_id", userId)
       ]);
 
-      if (notesData) setNotes(notesData);
-      if (notebooksData) setNotebooks(notebooksData);
+      if (notesError) throw notesError;
+      if (notebooksError) throw notebooksError;
+      if (favoritesError) throw favoritesError;
+
+      if (notesData && notesData.length > 0) {
+        setNotes(notesData);
+        lastSyncedNotes.current = JSON.stringify(notesData);
+      }
+      if (notebooksData && notebooksData.length > 0) {
+        setNotebooks(notebooksData);
+        lastSyncedNotebooks.current = JSON.stringify(notebooksData);
+      }
       if (favoritesData) setFavorites(favoritesData.map(f => f.note_id));
     } catch (error) {
-      console.error("Error fetching data from Supabase:", error);
+      console.error("Error fetching data from Supabase:", error.message);
     } finally {
       setSyncing(false);
     }
@@ -75,33 +89,78 @@ export function AppProvider({ children }) {
     }
   }, [fetchData]);
 
+  // Real-time subscriptions for cross-device sync
+  useEffect(() => {
+    if (!isSupabaseConfigured || !user) return;
+
+    const notesChannel = supabase
+      .channel('public:notes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notes', filter: `user_id=eq.${user.id}` }, 
+        (payload) => {
+          // Refresh data if another device changed something
+          fetchData(user.id);
+        }
+      )
+      .subscribe();
+
+    const notebooksChannel = supabase
+      .channel('public:notebooks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notebooks', filter: `user_id=eq.${user.id}` }, 
+        (payload) => fetchData(user.id)
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(notesChannel);
+      supabase.removeChannel(notebooksChannel);
+    };
+  }, [user, fetchData]);
+
   // Sync to Supabase
   const syncToSupabase = useCallback(async (type, data) => {
     if (!isSupabaseConfigured || !user) return;
+    
+    // Prevent sync if data hasn't actually changed from last fetch/sync
+    const dataStr = JSON.stringify(data);
+    if (type === "notes" && dataStr === lastSyncedNotes.current) return;
+    if (type === "notebooks" && dataStr === lastSyncedNotebooks.current) return;
+
     try {
       if (type === "notes") {
-        await supabase.from("notes").upsert(data.map(n => ({ ...n, user_id: user.id })));
+        await supabase.from("notes").upsert(data.map(n => ({ 
+          ...n, 
+          user_id: user.id,
+          // Ensure dates are valid ISO strings for Postgres if possible, but keep local format if needed
+          updated_at: new Date().toISOString()
+        })));
+        lastSyncedNotes.current = dataStr;
       } else if (type === "notebooks") {
         await supabase.from("notebooks").upsert(data.map(nb => ({ ...nb, user_id: user.id })));
+        lastSyncedNotebooks.current = dataStr;
       } else if (type === "favorites") {
-        // Delete old favorites and insert new ones
         await supabase.from("favorites").delete().eq("user_id", user.id);
         await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
       }
     } catch (error) {
-      console.error(`Error syncing ${type} to Supabase:`, error);
+      console.error(`Error syncing ${type} to Supabase:`, error.message);
     }
   }, [user]);
 
   // Persistence effects
   useEffect(() => {
     window.localStorage.setItem("app-notebooks", JSON.stringify(notebooks));
-    if (user) syncToSupabase("notebooks", notebooks);
+    const timeout = setTimeout(() => {
+      if (user) syncToSupabase("notebooks", notebooks);
+    }, 1000);
+    return () => clearTimeout(timeout);
   }, [notebooks, user, syncToSupabase]);
 
   useEffect(() => {
     window.localStorage.setItem("app-notes", JSON.stringify(notes));
-    if (user) syncToSupabase("notes", notes);
+    const timeout = setTimeout(() => {
+      if (user) syncToSupabase("notes", notes);
+    }, 1000);
+    return () => clearTimeout(timeout);
   }, [notes, user, syncToSupabase]);
 
   useEffect(() => {
@@ -114,7 +173,8 @@ export function AppProvider({ children }) {
       ...note,
       id: note.id || `note-${Date.now()}`,
       createdAt: note.createdAt || new Date().toISOString(),
-      date: note.date || new Date().toLocaleString('default', { month: 'short', day: 'numeric' })
+      date: note.date || new Date().toLocaleString('default', { month: 'short', day: 'numeric' }),
+      user_id: user?.id
     };
     setNotes((prev) => [newNote, ...prev]);
   };
@@ -160,7 +220,7 @@ export function AppProvider({ children }) {
   };
 
   const addNotebook = (notebook) => {
-    setNotebooks((prev) => [...prev, notebook]);
+    setNotebooks((prev) => [...prev, { ...notebook, user_id: user?.id }]);
   };
 
   const deleteNotebook = (notebookId) => {
@@ -210,6 +270,8 @@ export function AppProvider({ children }) {
     setNotes([...pinnedNotes, ...recentNotes]);
     setNotebooks(initialNotebooks);
     setFavorites([]);
+    lastSyncedNotes.current = null;
+    lastSyncedNotebooks.current = null;
   };
 
   return (
