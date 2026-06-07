@@ -41,12 +41,16 @@ export function AppProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
+  // Initialize with empty lists if Supabase is active (will be populated from fetch)
+  // Fallback to local data only for "Mock Mode"
   const [notebooks, setNotebooks] = useState(() => {
+    if (isSupabaseConfigured) return [];
     const saved = window.localStorage.getItem("app-notebooks");
     return saved ? JSON.parse(saved) : initialNotebooks;
   });
 
   const [notes, setNotes] = useState(() => {
+    if (isSupabaseConfigured) return [];
     const saved = window.localStorage.getItem("app-notes");
     return saved ? JSON.parse(saved) : [...pinnedNotes, ...recentNotes];
   });
@@ -60,9 +64,11 @@ export function AppProvider({ children }) {
   
   const lastSyncedNotes = useRef(null);
   const lastSyncedNotebooks = useRef(null);
+  const isFetchingRef = useRef(false);
 
   const fetchData = useCallback(async (userId) => {
-    if (!isSupabaseConfigured || !userId) return;
+    if (!isSupabaseConfigured || !userId || isFetchingRef.current) return;
+    isFetchingRef.current = true;
     setSyncing(true);
     try {
       const [
@@ -79,27 +85,28 @@ export function AppProvider({ children }) {
       if (notebooksError) throw notebooksError;
       if (favoritesError) throw favoritesError;
 
-      if (notesData && notesData.length > 0) {
-        setNotes(notesData.map(n => ({
-          ...n,
-          isArchived: n.is_archived,
-          deletedAt: n.deleted_at,
-          createdAt: n.created_at
-        })));
-        lastSyncedNotes.current = JSON.stringify(notesData);
-      }
-      if (notebooksData && notebooksData.length > 0) {
-        setNotebooks(notebooksData);
-        lastSyncedNotebooks.current = JSON.stringify(notebooksData);
-      }
-      if (favoritesData) setFavorites(favoritesData.map(f => f.note_id));
+      // Even if empty, we update state to clear the "predefined" data
+      setNotes((notesData || []).map(n => ({
+        ...n,
+        isArchived: n.is_archived,
+        deletedAt: n.deleted_at,
+        createdAt: n.created_at
+      })));
+      lastSyncedNotes.current = JSON.stringify(notesData || []);
+
+      setNotebooks(notebooksData || []);
+      lastSyncedNotebooks.current = JSON.stringify(notebooksData || []);
+
+      setFavorites((favoritesData || []).map(f => f.note_id));
     } catch (error) {
       console.error("Supabase Fetch Error:", error.message);
     } finally {
       setSyncing(false);
+      isFetchingRef.current = false;
     }
   }, []);
 
+  // Auth session management
   useEffect(() => {
     if (isSupabaseConfigured) {
       supabase.auth.getSession().then(({ data: { session } }) => {
@@ -123,31 +130,50 @@ export function AppProvider({ children }) {
     }
   }, [fetchData]);
 
+  // Real-time subscriptions for bidirectional cross-device sync
   useEffect(() => {
     if (!isSupabaseConfigured || !user) return;
 
-    const notesChannel = supabase
-      .channel('public:notes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notes', filter: `user_id=eq.${user.id}` }, 
-        () => fetchData(user.id)
-      )
-      .subscribe();
-
-    const notebooksChannel = supabase
-      .channel('public:notebooks')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notebooks', filter: `user_id=eq.${user.id}` }, 
-        () => fetchData(user.id)
-      )
-      .subscribe();
+    // Use specific channel names for better tracking
+    const changesChannel = supabase
+      .channel(`sync:${user.id}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'notes', 
+        filter: `user_id=eq.${user.id}` 
+      }, (payload) => {
+        console.log("Real-time update received (notes):", payload.eventType);
+        fetchData(user.id);
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'notebooks', 
+        filter: `user_id=eq.${user.id}` 
+      }, (payload) => {
+        console.log("Real-time update received (notebooks):", payload.eventType);
+        fetchData(user.id);
+      })
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'favorites', 
+        filter: `user_id=eq.${user.id}` 
+      }, (payload) => {
+        fetchData(user.id);
+      })
+      .subscribe((status) => {
+        console.log(`Real-time sync status for ${user.id}:`, status);
+      });
 
     return () => {
-      supabase.removeChannel(notesChannel);
-      supabase.removeChannel(notebooksChannel);
+      supabase.removeChannel(changesChannel);
     };
   }, [user, fetchData]);
 
   const syncToSupabase = useCallback(async (type, data) => {
-    if (!isSupabaseConfigured || !user) return;
+    if (!isSupabaseConfigured || !user || isFetchingRef.current) return;
     
     try {
       if (type === "notes") {
@@ -167,8 +193,11 @@ export function AppProvider({ children }) {
         if (error) throw error;
         lastSyncedNotebooks.current = dataStr;
       } else if (type === "favorites") {
+        // Sync favorites (slightly different as it's a join table)
         await supabase.from("favorites").delete().eq("user_id", user.id);
-        await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
+        if (data.length > 0) {
+          await supabase.from("favorites").insert(data.map(id => ({ note_id: id, user_id: user.id })));
+        }
       }
     } catch (error) {
       console.error(`Supabase Sync Error (${type}):`, error.message);
@@ -177,13 +206,13 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     window.localStorage.setItem("app-notebooks", JSON.stringify(notebooks));
-    const timeout = setTimeout(() => syncToSupabase("notebooks", notebooks), 1000);
+    const timeout = setTimeout(() => syncToSupabase("notebooks", notebooks), 800);
     return () => clearTimeout(timeout);
   }, [notebooks, syncToSupabase]);
 
   useEffect(() => {
     window.localStorage.setItem("app-notes", JSON.stringify(notes));
-    const timeout = setTimeout(() => syncToSupabase("notes", notes), 1000);
+    const timeout = setTimeout(() => syncToSupabase("notes", notes), 800);
     return () => clearTimeout(timeout);
   }, [notes, syncToSupabase]);
 
@@ -290,8 +319,8 @@ export function AppProvider({ children }) {
       window.localStorage.removeItem("app-user");
       setUser(null);
     }
-    setNotes([...pinnedNotes, ...recentNotes]);
-    setNotebooks(initialNotebooks);
+    setNotes([]);
+    setNotebooks([]);
     setFavorites([]);
     lastSyncedNotes.current = null;
     lastSyncedNotebooks.current = null;
