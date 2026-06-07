@@ -386,6 +386,9 @@ function CodeSection({ section, onUpdate, isEditMode }) {
   }, []);
 
   const highlightedCode = useMemo(() => {
+    if (typeof Prism === 'undefined') {
+      return section.code || '';
+    }
     const lang = LANG_MAP[section.language] || "javascript";
     const grammar = Prism.languages[lang] || Prism.languages.javascript;
     return Prism.highlight(section.code || "", grammar, lang);

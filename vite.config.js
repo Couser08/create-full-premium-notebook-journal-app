@@ -11,6 +11,10 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Keep prismjs in the main chunk to avoid race conditions
+          if (id.includes('prismjs')) {
+            return undefined; // Return to main chunk
+          }
           if (id.includes('node_modules')) {
             if (id.includes('react') || id.includes('react-router')) {
               return 'react-vendors';
@@ -18,8 +22,6 @@ export default defineConfig({
               return 'ui-vendors';
             } else if (id.includes('supabase')) {
               return 'supabase';
-            } else if (id.includes('prismjs')) {
-              return 'editor';
             }
           }
         }
